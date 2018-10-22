@@ -124,7 +124,7 @@ private:
 			const char *ADDR = inet_ntop(AF_INET, &ClientAddr.sin_addr, ADDRBuffer,
 				sizeof(ADDRBuffer));
 			if (ADDR)
-				fprintf(stderr, "Connection Request: %s:%d\n", ADDR, ntohs(ClientAddr.sin_port));
+				cerr << "Connection Request: " << ADDR << ":" << ntohs(ClientAddr.sin_port) << "\n";
 			else
 				cerr << "inet_ntop() err.\n";
 			std::thread(&Server_v4::handleClientRequest, this, Client, ADDR).detach();
@@ -227,9 +227,9 @@ private:
 			const char *ADDR = inet_ntop(AF_INET6, &ClientAddr.sin6_addr, ADDRBuffer,
 				sizeof(ADDRBuffer));
 			if (ADDR)
-				printf("Connection Request: %s:%d\n", ADDR, ntohs(ClientAddr.sin6_port));
+				cerr << "Connection Request: " << ADDR << ":" << ntohs(ClientAddr.sin6_port) << "\n";
 			else
-				puts("inet_ntop() err.");
+				cerr << "inet_ntop() err.\n";
 			std::thread(&Server_v6::handleClientRequest, this, Client, ADDR).detach();
 		}
 	}
@@ -388,6 +388,8 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 		if (rlen == SOCKET_ERROR)
 		{
 			cerr << "recv() failed\n";
+			os.close();
+			remove(Output.c_str());
 			return;
 		}
 		if (crypto_secretstream_xchacha20poly1305_pull(&st, buf_out, &out_len, &tag,
@@ -530,6 +532,7 @@ int main(int argc, char** argv)
 		if (vm.count("server") && vm.count("client"))
 		{
 			cerr << "Cannot work under both server and client mode\n";
+			WSACleanup();
 			exit(1);
 		}
 		if (vm.count("server"))
@@ -578,7 +581,7 @@ int main(int argc, char** argv)
 				WSACleanup();
 				return 1;
 			}
-			if(vm.count("ipv4") && vm.count("ipv6"))
+			if (vm.count("ipv4") && vm.count("ipv6"))
 			{
 				cerr << "Please specify only one IP address\n";
 				WSACleanup();
