@@ -1,0 +1,441 @@
+// Network.cpp : 此文件包含 "main" 函数。程序执行将在此处开始并结束。
+//
+
+#include "pch.h"
+#include <iostream>
+#include <cstdlib>
+#include <WinSock2.h>
+#include <WS2tcpip.h>
+#include <cstdio>
+#include <fstream>
+#include <cstring>
+#include <string>
+#include <functional>
+#include <sodium.h>
+#include <thread>
+#include <exception>
+#include <boost/program_options.hpp>
+#include <filesystem>
+
+namespace fs = std::filesystem;
+
+#pragma comment(lib, "ws2_32.lib")
+
+namespace po = boost::program_options;
+
+using namespace std;
+
+constexpr size_t CHUNK_SIZE = 4096;
+
+void initWSA()
+{
+	WORD mWSAver = MAKEWORD(2, 2);
+	auto mWSA = WSADATA();
+	if (0 != WSAStartup(mWSAver, &mWSA))
+	{
+		cerr << "WSAStartup() failed\n";
+		exit(1);
+	}
+}
+
+class Server
+{
+public:
+	Server(const int port) :ServerPort(port) { crypto_kx_keypair(server_pk, server_sk); }
+
+	void serveForever() {
+		ServerSocket = createServerSocket(ServerPort);
+		handleServerSocket(ServerSocket);
+	}
+
+	void setCallBack(function<void(const SOCKET, const char*, unsigned char*, unsigned char*)>CallBack)
+	{
+		Func = CallBack;
+	}
+
+	void close()
+	{
+		closesocket(ServerSocket);
+	}
+
+
+private:
+	SOCKET ServerSocket;
+
+	int ServerPort;
+
+	function<void(const SOCKET, const char*, unsigned char*, unsigned char*)> Func;
+
+	SOCKET createServerSocket(int port)
+	{
+		const int ServerPort = port;
+		SOCKET Server = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+		if (Server == INVALID_SOCKET)
+		{
+			cerr << "socket() failed\n";
+			WSACleanup();
+			exit(1);
+		}
+
+		struct sockaddr_in6 ServerAddr;
+		ZeroMemory(&ServerAddr, sizeof(ServerAddr));
+		ServerAddr.sin6_family = AF_INET6;
+		ServerAddr.sin6_addr = in6addr_any;
+		ServerAddr.sin6_port = htons(ServerPort);
+		int BindRes = ::bind(Server, (struct sockaddr *)&ServerAddr, sizeof(ServerAddr));
+		if (BindRes == SOCKET_ERROR)
+		{
+			cerr << "bind() failed\n";
+			WSACleanup();
+			exit(1);
+		}
+		int Enable = 1;
+		int Ret = setsockopt(Server, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<char*>(&Enable), sizeof(int));
+		if (Ret == SOCKET_ERROR)
+		{
+			cerr << "setsockopt() failed\n";
+			WSACleanup();
+			exit(1);
+		}
+		int ListenRes = listen(Server, 128);
+		if (ListenRes == SOCKET_ERROR)
+		{
+			cerr << "listen() failed\n";
+			WSACleanup();
+			exit(1);
+		}
+		return Server;
+	}
+
+	void handleServerSocket(SOCKET Server)
+	{
+		while (true)
+		{
+			SOCKET Client;
+			struct sockaddr_in6 ClientAddr;
+			int ClientAddrSize = sizeof(ClientAddr);
+			Client = accept(Server, (struct sockaddr *)&ClientAddr, &ClientAddrSize);
+			if (Client == INVALID_SOCKET)
+			{
+				cerr << "accept() failed\n";
+				continue;
+			}
+			char ADDRBuffer[INET6_ADDRSTRLEN];
+			const char *ADDR = inet_ntop(AF_INET6, &ClientAddr.sin6_addr, ADDRBuffer,
+				sizeof(ADDRBuffer));
+			if (ADDR)
+				printf("Connection Request: %s:%d\n", ADDR, ntohs(ClientAddr.sin6_port));
+			else
+				puts("inet_ntop() err.");
+			std::thread(&Server::handleClientRequest, this, Client, ADDR).detach();
+		}
+	}
+
+	void handleClientRequest(const SOCKET Client, const char* ADDR)
+	{
+		Func(Client, ADDR, server_pk, server_sk);
+		closesocket(Client);
+	}
+
+	// These two keys are reused each session.
+	unsigned char server_pk[crypto_kx_PUBLICKEYBYTES], server_sk[crypto_kx_SECRETKEYBYTES];
+};
+
+class Client
+{
+public:
+	Client(const char* ADDR, int port)
+	{
+		ClientSocket = createClientSocket(ADDR, port);
+	}
+	void close()
+	{
+		closesocket(ClientSocket);
+	}
+	SOCKET ClientSocket;
+private:
+	SOCKET createClientSocket(const char* ADDR, int port)
+	{
+		const int ClientPort = port;
+		SOCKET Client = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+		if (Client == INVALID_SOCKET)
+		{
+			cerr << "socket() failed\n";
+			WSACleanup();
+			exit(1);
+		}
+		struct sockaddr_in6 ClientAddr;
+		ZeroMemory(&ClientAddr, sizeof(ClientAddr));
+		ClientAddr.sin6_family = AF_INET6;
+		inet_pton(AF_INET6, ADDR, &ClientAddr.sin6_addr);
+		ClientAddr.sin6_port = htons(ClientPort);
+		int Ret = connect(Client, (struct sockaddr*)&ClientAddr, sizeof(ClientAddr));
+		if (Ret == SOCKET_ERROR)
+		{
+			cerr << "connect() failed\n";
+			closesocket(Client);
+		}
+		return Client;
+	}
+};
+
+string FileName;
+void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* server_pk, unsigned char* server_sk)
+{
+	// Key Exchange
+	//=======================================================
+	unsigned char client_pk[crypto_kx_PUBLICKEYBYTES];
+	unsigned char server_rx[crypto_kx_SESSIONKEYBYTES], server_tx[crypto_kx_SESSIONKEYBYTES];
+	// Client send public key first
+	recv(ServerSocket, reinterpret_cast<char*>(client_pk), crypto_kx_PUBLICKEYBYTES, 0);
+	send(ServerSocket, reinterpret_cast<char*>(server_pk), crypto_kx_PUBLICKEYBYTES, 0);
+	if (crypto_kx_server_session_keys(server_rx, server_tx,
+		server_pk, server_sk, client_pk) != 0) {
+		cerr << "Suspicious client public key\n";
+	}
+	cerr << "Server Key Exchange done\n";
+	//=======================================================
+	// Server only receives, so we only use server_rx here.
+	// Read salt
+	unsigned char  buf_in[CHUNK_SIZE + crypto_secretstream_xchacha20poly1305_ABYTES];
+	unsigned char  buf_out[CHUNK_SIZE];
+	unsigned char  header[crypto_secretstream_xchacha20poly1305_HEADERBYTES];
+	crypto_secretstream_xchacha20poly1305_state st;
+	// Read header
+	int gcount = recv(ServerSocket, reinterpret_cast<char*>(header), crypto_secretstream_xchacha20poly1305_HEADERBYTES, 0);
+	if (gcount != crypto_secretstream_xchacha20poly1305_HEADERBYTES)
+	{
+		cerr << "The input stream is broken!\n";
+		exit(1);
+	}
+	if (crypto_secretstream_xchacha20poly1305_init_pull(&st, header, server_rx) != 0) {
+		// incomplete header
+		cerr << "The encryption header is incomplete\n";
+		exit(1);
+	}
+
+	unsigned char tag = 0;
+	unsigned long long out_len;
+	int rlen;
+
+	// Read filename
+	rlen = recv(ServerSocket, reinterpret_cast<char*>(buf_in), CHUNK_SIZE + crypto_secretstream_xchacha20poly1305_ABYTES, 0);
+	if (rlen == SOCKET_ERROR)
+	{
+		cerr << "recv() failed\n";
+		return;
+	}
+	memset(buf_out, 0, sizeof(buf_out));
+	if (crypto_secretstream_xchacha20poly1305_pull(&st, buf_out, &out_len, &tag,
+		buf_in, rlen, NULL, 0) != 0) {
+		// corrupted chunk
+		cerr << "The file_name is corrupted\n";
+		return;
+	}
+
+
+	char fname[_MAX_FNAME];
+	char fext[_MAX_EXT];
+	_splitpath_s(reinterpret_cast<const char*>(buf_out),
+		nullptr, 0, nullptr, 0, fname, _MAX_FNAME, fext, _MAX_EXT);
+	string Output = ".\\Files\\" + string(fname) + string(fext);
+	cerr << "Receiving " << Output << "\n";
+	ofstream os(Output, ios::binary | ios::trunc | ios::out);
+	while (true)
+	{
+		rlen = recv(ServerSocket, reinterpret_cast<char*>(buf_in), CHUNK_SIZE + crypto_secretstream_xchacha20poly1305_ABYTES, 0);
+		if (rlen == SOCKET_ERROR)
+		{
+			cerr << "recv() failed\n";
+			return;
+		}
+		if (crypto_secretstream_xchacha20poly1305_pull(&st, buf_out, &out_len, &tag,
+			buf_in, rlen, NULL, 0) != 0) {
+			// corrupted chunk
+			cerr << "The file is corrupted\n";
+			os.close();
+			remove(Output.c_str());
+			return;
+		}
+		os.write(reinterpret_cast<char*>(buf_out), out_len);
+		if (tag == crypto_secretstream_xchacha20poly1305_TAG_FINAL) {
+			os.close();
+			break;
+		}
+	}
+	shutdown(ServerSocket, SD_BOTH);
+}
+
+
+void handleServer(const SOCKET ClientSocket)
+{
+	// Key Exchange
+	//=======================================================
+	unsigned char server_pk[crypto_kx_PUBLICKEYBYTES];
+	unsigned char client_pk[crypto_kx_PUBLICKEYBYTES], client_sk[crypto_kx_SECRETKEYBYTES];
+	unsigned char client_rx[crypto_kx_SESSIONKEYBYTES], client_tx[crypto_kx_SESSIONKEYBYTES];
+	crypto_kx_keypair(client_pk, client_sk);
+	// Client send public key first
+	send(ClientSocket, reinterpret_cast<char*>(client_pk), crypto_kx_PUBLICKEYBYTES, 0);
+	// Get Server's public key
+	int ReadLen = recv(ClientSocket, reinterpret_cast<char*>(server_pk), crypto_kx_PUBLICKEYBYTES, 0);
+	if (crypto_kx_client_session_keys(client_rx, client_tx,
+		client_pk, client_sk, server_pk) != 0) {
+		cerr << "Suspicious server public key\n";
+	}
+	cerr << "Client Key Exchange done\n";
+	//=======================================================
+	// Client only sends, so we only use client_tx here.
+	ifstream is(FileName, ios::binary | ios::in);
+	if (!is.is_open())
+	{
+		cerr << "The input file cannot be opened!\n";
+		WSACleanup();
+		exit(1);
+	}
+	cerr << "Sending " << FileName << "\n";
+	unsigned char  buf_in[CHUNK_SIZE];
+	unsigned char  buf_out[CHUNK_SIZE + crypto_secretstream_xchacha20poly1305_ABYTES];
+	unsigned char  header[crypto_secretstream_xchacha20poly1305_HEADERBYTES];
+	crypto_secretstream_xchacha20poly1305_state st;
+	crypto_secretstream_xchacha20poly1305_init_push(&st, header, client_tx);
+	// Send header
+	send(ClientSocket, reinterpret_cast<const char*>(header), crypto_secretstream_xchacha20poly1305_HEADERBYTES, 0);
+	bool eof = is.eof();
+	unsigned char tag = 0;
+	unsigned long long out_len;
+	size_t rlen;
+	// Send filename
+	crypto_secretstream_xchacha20poly1305_push(&st, buf_out, &out_len,
+		reinterpret_cast<const unsigned char*>(FileName.c_str()), FileName.size(),
+		NULL, 0, tag);
+	send(ClientSocket, reinterpret_cast<char*>(buf_out), static_cast<int>(out_len), 0);
+	// Send file
+	do
+	{
+		is.read(reinterpret_cast<char*>(buf_in), CHUNK_SIZE);
+		rlen = is.gcount();
+		eof = is.eof();
+		tag = eof ? crypto_secretstream_xchacha20poly1305_TAG_FINAL : 0;
+		crypto_secretstream_xchacha20poly1305_push(&st, buf_out, &out_len, buf_in, rlen,
+			NULL, 0, tag);
+		send(ClientSocket, reinterpret_cast<char*>(buf_out), static_cast<int>(out_len), 0);
+	} while (!eof);
+	shutdown(ClientSocket, SD_BOTH);
+	cerr << "File sent\n";
+}
+
+
+int main(int argc, char** argv)
+{
+	// Init crypto library
+	if (sodium_init() == -1) {
+		std::cerr << "libsodium failed to init, exiting...\n";
+		return 1;
+	}
+	// Create Files
+	fs::create_directory(".\\Files");
+	// Init Winsock2
+	initWSA();
+	// Declare the supported options.
+	po::options_description desc("Usage");
+	desc.add_options()
+		("help", "Show help message")
+		("server", "Work in server mode")
+		("client", "Work in client mode")
+		("port", po::value<int>(), "TCP port")
+		("address", po::value<string>(), "IP address of the server")
+		("file", po::value<string>(), "File to be sent")
+		;
+	po::positional_options_description p;
+	p.add("file", -1);
+	po::variables_map vm;
+	try {
+		po::store(po::command_line_parser(argc, argv).
+			options(desc).positional(p).run(), vm);
+		po::notify(vm);
+	}
+	catch (exception&e)
+	{
+		cerr << e.what() << endl;
+		return 1;
+	}
+
+	// help
+	if (vm.count("help")) {
+		cout << desc << "\n";
+		WSACleanup();
+		return 1;
+	}
+
+	if (vm.count("server") || vm.count("client"))
+	{
+		if (vm.count("server") && vm.count("client"))
+		{
+			cerr << "Cannot work under both server and client mode\n";
+			exit(1);
+		}
+		if (vm.count("server"))
+		{
+			if (!vm.count("port"))
+			{
+				cerr << "Please specify the TCP port\n";
+				WSACleanup();
+				return 1;
+			}
+			if (vm.count("address"))
+			{
+				cerr << "Address is ignored\n";
+			}
+			if (vm.count("file"))
+			{
+				cerr << "File is ignored\n";
+			}
+			Server FileTransferServer(vm["port"].as<int>());
+			FileTransferServer.setCallBack(handleClient);
+			FileTransferServer.serveForever();
+			FileTransferServer.close();
+		}
+		else
+		{
+			if (!vm.count("port"))
+			{
+				cerr << "Please specify the TCP port\n";
+				WSACleanup();
+				return 1;
+			}
+			if (!vm.count("address"))
+			{
+				cerr << "Please specify the IP address\n";
+				WSACleanup();
+				return 1;
+			}
+			if (!vm.count("file"))
+			{
+				cerr << "Please specify the File\n";
+				WSACleanup();
+				return 1;
+			}
+			Client cl(vm["address"].as<string>().c_str(), vm["port"].as<int>());
+			FileName = vm["file"].as<string>();
+			handleServer(cl.ClientSocket);
+			cl.close();
+		}
+	}
+	else
+	{
+		cerr << "Please specify the working mode (server/client)\n";
+	}
+	WSACleanup();
+}
+
+// 运行程序: Ctrl + F5 或调试 >“开始执行(不调试)”菜单
+// 调试程序: F5 或调试 >“开始调试”菜单
+
+// 入门提示: 
+//   1. 使用解决方案资源管理器窗口添加/管理文件
+//   2. 使用团队资源管理器窗口连接到源代码管理
+//   3. 使用输出窗口查看生成输出和其他消息
+//   4. 使用错误列表窗口查看错误
+//   5. 转到“项目”>“添加新项”以创建新的代码文件，或转到“项目”>“添加现有项”以将现有代码文件添加到项目
+//   6. 将来，若要再次打开此项目，请转到“文件”>“打开”>“项目”并选择 .sln 文件
