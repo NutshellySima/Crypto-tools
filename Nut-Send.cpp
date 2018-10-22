@@ -339,7 +339,6 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 	cerr << "Server Key Exchange done\n";
 	//=======================================================
 	// Server only receives, so we only use server_rx here.
-	// Read salt
 	unsigned char  buf_in[CHUNK_SIZE + crypto_secretstream_xchacha20poly1305_ABYTES];
 	unsigned char  buf_out[CHUNK_SIZE];
 	unsigned char  header[crypto_secretstream_xchacha20poly1305_HEADERBYTES];
