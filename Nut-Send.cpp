@@ -38,10 +38,113 @@ void initWSA()
 	}
 }
 
-class Server
+class Server_v4
 {
 public:
-	Server(const int port) :ServerPort(port) { crypto_kx_keypair(server_pk, server_sk); }
+	Server_v4(const int port) :ServerPort(port) { crypto_kx_keypair(server_pk, server_sk); }
+
+	void serveForever() {
+		ServerSocket = createServerSocket(ServerPort);
+		handleServerSocket(ServerSocket);
+	}
+
+	void setCallBack(function<void(const SOCKET, const char*, unsigned char*, unsigned char*)>CallBack)
+	{
+		Func = CallBack;
+	}
+
+	void close()
+	{
+		closesocket(ServerSocket);
+	}
+
+
+private:
+	SOCKET ServerSocket;
+
+	int ServerPort;
+
+	function<void(const SOCKET, const char*, unsigned char*, unsigned char*)> Func;
+
+	SOCKET createServerSocket(int port)
+	{
+		const int ServerPort = port;
+		SOCKET Server = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (Server == INVALID_SOCKET)
+		{
+			cerr << "socket() failed\n";
+			WSACleanup();
+			exit(1);
+		}
+
+		struct sockaddr_in ServerAddr;
+		ZeroMemory(&ServerAddr, sizeof(ServerAddr));
+		ServerAddr.sin_family = AF_INET;
+		ServerAddr.sin_addr = in4addr_any;
+		ServerAddr.sin_port = htons(ServerPort);
+		int BindRes = ::bind(Server, (struct sockaddr *)&ServerAddr, sizeof(ServerAddr));
+		if (BindRes == SOCKET_ERROR)
+		{
+			cerr << "bind() failed\n";
+			WSACleanup();
+			exit(1);
+		}
+		int Enable = 1;
+		int Ret = setsockopt(Server, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<char*>(&Enable), sizeof(int));
+		if (Ret == SOCKET_ERROR)
+		{
+			cerr << "setsockopt() failed\n";
+			WSACleanup();
+			exit(1);
+		}
+		int ListenRes = listen(Server, 128);
+		if (ListenRes == SOCKET_ERROR)
+		{
+			cerr << "listen() failed\n";
+			WSACleanup();
+			exit(1);
+		}
+		return Server;
+	}
+
+	void handleServerSocket(SOCKET Server)
+	{
+		while (true)
+		{
+			SOCKET Client;
+			struct sockaddr_in ClientAddr;
+			int ClientAddrSize = sizeof(ClientAddr);
+			Client = accept(Server, (struct sockaddr *)&ClientAddr, &ClientAddrSize);
+			if (Client == INVALID_SOCKET)
+			{
+				cerr << "accept() failed\n";
+				continue;
+			}
+			char ADDRBuffer[INET6_ADDRSTRLEN];
+			const char *ADDR = inet_ntop(AF_INET, &ClientAddr.sin_addr, ADDRBuffer,
+				sizeof(ADDRBuffer));
+			if (ADDR)
+				fprintf(stderr, "Connection Request: %s:%d\n", ADDR, ntohs(ClientAddr.sin_port));
+			else
+				cerr << "inet_ntop() err.\n";
+			std::thread(&Server_v4::handleClientRequest, this, Client, ADDR).detach();
+		}
+	}
+
+	void handleClientRequest(const SOCKET Client, const char* ADDR)
+	{
+		Func(Client, ADDR, server_pk, server_sk);
+		closesocket(Client);
+	}
+
+	// These two keys are reused each session.
+	unsigned char server_pk[crypto_kx_PUBLICKEYBYTES], server_sk[crypto_kx_SECRETKEYBYTES];
+};
+
+class Server_v6
+{
+public:
+	Server_v6(const int port) :ServerPort(port) { crypto_kx_keypair(server_pk, server_sk); }
 
 	void serveForever() {
 		ServerSocket = createServerSocket(ServerPort);
@@ -127,7 +230,7 @@ private:
 				printf("Connection Request: %s:%d\n", ADDR, ntohs(ClientAddr.sin6_port));
 			else
 				puts("inet_ntop() err.");
-			std::thread(&Server::handleClientRequest, this, Client, ADDR).detach();
+			std::thread(&Server_v6::handleClientRequest, this, Client, ADDR).detach();
 		}
 	}
 
@@ -141,10 +244,48 @@ private:
 	unsigned char server_pk[crypto_kx_PUBLICKEYBYTES], server_sk[crypto_kx_SECRETKEYBYTES];
 };
 
-class Client
+class Client_v4
 {
 public:
-	Client(const char* ADDR, int port)
+	Client_v4(const char* ADDR, int port)
+	{
+		ClientSocket = createClientSocket(ADDR, port);
+	}
+	void close()
+	{
+		closesocket(ClientSocket);
+	}
+	SOCKET ClientSocket;
+private:
+	SOCKET createClientSocket(const char* ADDR, int port)
+	{
+		const int ClientPort = port;
+		SOCKET Client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (Client == INVALID_SOCKET)
+		{
+			cerr << "socket() failed\n";
+			WSACleanup();
+			exit(1);
+		}
+		struct sockaddr_in ClientAddr;
+		ZeroMemory(&ClientAddr, sizeof(ClientAddr));
+		ClientAddr.sin_family = AF_INET;
+		inet_pton(AF_INET, ADDR, &ClientAddr.sin_addr);
+		ClientAddr.sin_port = htons(ClientPort);
+		int Ret = connect(Client, (struct sockaddr*)&ClientAddr, sizeof(ClientAddr));
+		if (Ret == SOCKET_ERROR)
+		{
+			cerr << "connect() failed\n";
+			closesocket(Client);
+		}
+		return Client;
+	}
+};
+
+class Client_v6
+{
+public:
+	Client_v6(const char* ADDR, int port)
 	{
 		ClientSocket = createClientSocket(ADDR, port);
 	}
@@ -187,7 +328,7 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 	unsigned char client_pk[crypto_kx_PUBLICKEYBYTES];
 	unsigned char server_rx[crypto_kx_SESSIONKEYBYTES], server_tx[crypto_kx_SESSIONKEYBYTES];
 	// Client send public key first
-	recv(ServerSocket, reinterpret_cast<char*>(client_pk), crypto_kx_PUBLICKEYBYTES, 0);
+	recv(ServerSocket, reinterpret_cast<char*>(client_pk), crypto_kx_PUBLICKEYBYTES, MSG_WAITALL);
 	send(ServerSocket, reinterpret_cast<char*>(server_pk), crypto_kx_PUBLICKEYBYTES, 0);
 	if (crypto_kx_server_session_keys(server_rx, server_tx,
 		server_pk, server_sk, client_pk) != 0) {
@@ -202,7 +343,7 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 	unsigned char  header[crypto_secretstream_xchacha20poly1305_HEADERBYTES];
 	crypto_secretstream_xchacha20poly1305_state st;
 	// Read header
-	int gcount = recv(ServerSocket, reinterpret_cast<char*>(header), crypto_secretstream_xchacha20poly1305_HEADERBYTES, 0);
+	int gcount = recv(ServerSocket, reinterpret_cast<char*>(header), crypto_secretstream_xchacha20poly1305_HEADERBYTES, MSG_WAITALL);
 	if (gcount != crypto_secretstream_xchacha20poly1305_HEADERBYTES)
 	{
 		cerr << "The input stream is broken!\n";
@@ -219,11 +360,10 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 	int rlen;
 
 	// Read filename
-	rlen = recv(ServerSocket, reinterpret_cast<char*>(buf_in), CHUNK_SIZE + crypto_secretstream_xchacha20poly1305_ABYTES, 0);
+	rlen = recv(ServerSocket, reinterpret_cast<char*>(buf_in), CHUNK_SIZE + crypto_secretstream_xchacha20poly1305_ABYTES, MSG_WAITALL);
 	if (rlen == SOCKET_ERROR)
 	{
 		cerr << "recv() failed\n";
-		cerr << GetLastError() << "\n";
 		return;
 	}
 	memset(buf_out, 0, sizeof(buf_out));
@@ -240,15 +380,14 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 	_splitpath_s(reinterpret_cast<const char*>(buf_out),
 		nullptr, 0, nullptr, 0, fname, _MAX_FNAME, fext, _MAX_EXT);
 	string Output = ".\\Files\\" + string(fname) + string(fext);
-	cerr << "Receiving " << Output << "\n";
+	cerr << "Receiving " << Output << endl;
 	ofstream os(Output, ios::binary | ios::trunc | ios::out);
 	while (true)
 	{
-		rlen = recv(ServerSocket, reinterpret_cast<char*>(buf_in), CHUNK_SIZE + crypto_secretstream_xchacha20poly1305_ABYTES, 0);
+		rlen = recv(ServerSocket, reinterpret_cast<char*>(buf_in), CHUNK_SIZE + crypto_secretstream_xchacha20poly1305_ABYTES, MSG_WAITALL);
 		if (rlen == SOCKET_ERROR)
 		{
 			cerr << "recv() failed\n";
-			cerr << GetLastError() << "\n";
 			return;
 		}
 		if (crypto_secretstream_xchacha20poly1305_pull(&st, buf_out, &out_len, &tag,
@@ -267,6 +406,7 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 	}
 	os.close();
 	shutdown(ServerSocket, SD_BOTH);
+	cerr << "The file has been successfully received\n";
 }
 
 
@@ -281,7 +421,7 @@ void handleServer(const SOCKET ClientSocket)
 	// Client send public key first
 	send(ClientSocket, reinterpret_cast<char*>(client_pk), crypto_kx_PUBLICKEYBYTES, 0);
 	// Get Server's public key
-	int ReadLen = recv(ClientSocket, reinterpret_cast<char*>(server_pk), crypto_kx_PUBLICKEYBYTES, 0);
+	int ReadLen = recv(ClientSocket, reinterpret_cast<char*>(server_pk), crypto_kx_PUBLICKEYBYTES, MSG_WAITALL);
 	if (crypto_kx_client_session_keys(client_rx, client_tx,
 		client_pk, client_sk, server_pk) != 0) {
 		cerr << "Suspicious server public key\n";
@@ -296,7 +436,7 @@ void handleServer(const SOCKET ClientSocket)
 		WSACleanup();
 		exit(1);
 	}
-	cerr << "Sending " << FileName << "\n";
+	cerr << "Sending " << FileName << endl;
 	unsigned char  buf_in[CHUNK_SIZE];
 	unsigned char  buf_out[CHUNK_SIZE + crypto_secretstream_xchacha20poly1305_ABYTES];
 	unsigned char  header[crypto_secretstream_xchacha20poly1305_HEADERBYTES];
@@ -309,14 +449,17 @@ void handleServer(const SOCKET ClientSocket)
 	unsigned long long out_len;
 	size_t rlen;
 	// Send filename
+	memset(buf_in, 0, sizeof(buf_in));
+	strcpy_s(reinterpret_cast<char*>(buf_in), CHUNK_SIZE, FileName.c_str());
 	crypto_secretstream_xchacha20poly1305_push(&st, buf_out, &out_len,
-		reinterpret_cast<const unsigned char*>(FileName.c_str()), FileName.size(),
-		NULL, 0, tag);
+		buf_in, CHUNK_SIZE,
+		NULL, 0, crypto_secretstream_xchacha20poly1305_TAG_PUSH);
 	int Ret = send(ClientSocket, reinterpret_cast<char*>(buf_out), static_cast<int>(out_len), 0);
 	if (Ret == SOCKET_ERROR)
 	{
 		cerr << "send() failed\n";
-		cerr << GetLastError() << "\n";
+		is.close();
+		return;
 	}
 	// Send file
 	do
@@ -331,12 +474,10 @@ void handleServer(const SOCKET ClientSocket)
 		if (Ret == SOCKET_ERROR)
 		{
 			cerr << "send() failed\n";
-			cerr << GetLastError() << "\n";
 			break;
 		}
 	} while (!eof);
 	shutdown(ClientSocket, SD_BOTH);
-	cerr << "File sent\n";
 	is.close();
 }
 
@@ -359,7 +500,8 @@ int main(int argc, char** argv)
 		("server", "Work in server mode")
 		("client", "Work in client mode")
 		("port", po::value<int>(), "TCP port")
-		("address", po::value<string>(), "IP address of the server")
+		("ipv4", po::value<string>(), "IPv4 address of the server")
+		("ipv6", po::value<string>(), "IPv6 address of the server")
 		("file", po::value<string>(), "File to be sent")
 		;
 	po::positional_options_description p;
@@ -378,7 +520,7 @@ int main(int argc, char** argv)
 
 	// help
 	if (vm.count("help")) {
-		cout << desc << "\n";
+		cout << desc << endl;
 		WSACleanup();
 		return 1;
 	}
@@ -398,7 +540,7 @@ int main(int argc, char** argv)
 				WSACleanup();
 				return 1;
 			}
-			if (vm.count("address"))
+			if (vm.count("ipv4") || vm.count("ipv6"))
 			{
 				cerr << "Address is ignored\n";
 			}
@@ -406,10 +548,21 @@ int main(int argc, char** argv)
 			{
 				cerr << "File is ignored\n";
 			}
-			Server FileTransferServer(vm["port"].as<int>());
-			FileTransferServer.setCallBack(handleClient);
-			FileTransferServer.serveForever();
-			FileTransferServer.close();
+			vector<thread>t;
+			t.emplace_back([&]() {
+				Server_v4 FileTransferServer_v4(vm["port"].as<int>());
+				FileTransferServer_v4.setCallBack(handleClient);
+				FileTransferServer_v4.serveForever();
+				FileTransferServer_v4.close();
+			});
+			t.emplace_back([&]() {
+				Server_v6 FileTransferServer_v6(vm["port"].as<int>());
+				FileTransferServer_v6.setCallBack(handleClient);
+				FileTransferServer_v6.serveForever();
+				FileTransferServer_v6.close();
+			});
+			for (auto& i : t)
+				i.join();
 		}
 		else
 		{
@@ -419,9 +572,15 @@ int main(int argc, char** argv)
 				WSACleanup();
 				return 1;
 			}
-			if (!vm.count("address"))
+			if (!vm.count("ipv4") && !vm.count("ipv6"))
 			{
 				cerr << "Please specify the IP address\n";
+				WSACleanup();
+				return 1;
+			}
+			if(vm.count("ipv4") && vm.count("ipv6"))
+			{
+				cerr << "Please specify only one IP address\n";
 				WSACleanup();
 				return 1;
 			}
@@ -431,10 +590,21 @@ int main(int argc, char** argv)
 				WSACleanup();
 				return 1;
 			}
-			Client cl(vm["address"].as<string>().c_str(), vm["port"].as<int>());
-			FileName = vm["file"].as<string>();
-			handleServer(cl.ClientSocket);
-			cl.close();
+			if (vm.count("ipv4"))
+			{
+				Client_v4 cl(vm["ipv4"].as<string>().c_str(), vm["port"].as<int>());
+				FileName = vm["file"].as<string>();
+				handleServer(cl.ClientSocket);
+				cl.close();
+			}
+			else
+			{
+				Client_v6 cl(vm["ipv6"].as<string>().c_str(), vm["port"].as<int>());
+				FileName = vm["file"].as<string>();
+				handleServer(cl.ClientSocket);
+				cl.close();
+			}
+
 		}
 	}
 	else
