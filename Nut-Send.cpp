@@ -223,6 +223,7 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 	if (rlen == SOCKET_ERROR)
 	{
 		cerr << "recv() failed\n";
+		cerr << GetLastError() << "\n";
 		return;
 	}
 	memset(buf_out, 0, sizeof(buf_out));
@@ -247,6 +248,7 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 		if (rlen == SOCKET_ERROR)
 		{
 			cerr << "recv() failed\n";
+			cerr << GetLastError() << "\n";
 			return;
 		}
 		if (crypto_secretstream_xchacha20poly1305_pull(&st, buf_out, &out_len, &tag,
@@ -263,6 +265,7 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 			break;
 		}
 	}
+	os.close();
 	shutdown(ServerSocket, SD_BOTH);
 }
 
@@ -309,7 +312,12 @@ void handleServer(const SOCKET ClientSocket)
 	crypto_secretstream_xchacha20poly1305_push(&st, buf_out, &out_len,
 		reinterpret_cast<const unsigned char*>(FileName.c_str()), FileName.size(),
 		NULL, 0, tag);
-	send(ClientSocket, reinterpret_cast<char*>(buf_out), static_cast<int>(out_len), 0);
+	int Ret = send(ClientSocket, reinterpret_cast<char*>(buf_out), static_cast<int>(out_len), 0);
+	if (Ret == SOCKET_ERROR)
+	{
+		cerr << "send() failed\n";
+		cerr << GetLastError() << "\n";
+	}
 	// Send file
 	do
 	{
@@ -319,10 +327,17 @@ void handleServer(const SOCKET ClientSocket)
 		tag = eof ? crypto_secretstream_xchacha20poly1305_TAG_FINAL : 0;
 		crypto_secretstream_xchacha20poly1305_push(&st, buf_out, &out_len, buf_in, rlen,
 			NULL, 0, tag);
-		send(ClientSocket, reinterpret_cast<char*>(buf_out), static_cast<int>(out_len), 0);
+		Ret = send(ClientSocket, reinterpret_cast<char*>(buf_out), static_cast<int>(out_len), 0);
+		if (Ret == SOCKET_ERROR)
+		{
+			cerr << "send() failed\n";
+			cerr << GetLastError() << "\n";
+			break;
+		}
 	} while (!eof);
 	shutdown(ClientSocket, SD_BOTH);
 	cerr << "File sent\n";
+	is.close();
 }
 
 
