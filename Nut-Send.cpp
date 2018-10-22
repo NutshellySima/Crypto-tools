@@ -334,6 +334,7 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 	if (crypto_kx_server_session_keys(server_rx, server_tx,
 		server_pk, server_sk, client_pk) != 0) {
 		cerr << "Suspicious client public key\n";
+		return;
 	}
 	cerr << "Server Key Exchange done\n";
 	//=======================================================
