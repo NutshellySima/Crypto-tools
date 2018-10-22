@@ -6,7 +6,6 @@
 #include <cstdlib>
 #include <WinSock2.h>
 #include <WS2tcpip.h>
-#include <cstdio>
 #include <fstream>
 #include <cstring>
 #include <string>
@@ -522,7 +521,7 @@ int main(int argc, char** argv)
 
 	// help
 	if (vm.count("help")) {
-		cout << desc << endl;
+		cerr << desc << endl;
 		WSACleanup();
 		return 1;
 	}
