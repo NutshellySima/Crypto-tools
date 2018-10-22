@@ -276,6 +276,7 @@ private:
 		{
 			cerr << "connect() failed\n";
 			closesocket(Client);
+			Client = INVALID_SOCKET;
 		}
 		return Client;
 	}
@@ -314,6 +315,7 @@ private:
 		{
 			cerr << "connect() failed\n";
 			closesocket(Client);
+			Client = INVALID_SOCKET;
 		}
 		return Client;
 	}
@@ -346,12 +348,12 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 	if (gcount != crypto_secretstream_xchacha20poly1305_HEADERBYTES)
 	{
 		cerr << "The input stream is broken!\n";
-		exit(1);
+		return;
 	}
 	if (crypto_secretstream_xchacha20poly1305_init_pull(&st, header, server_rx) != 0) {
 		// incomplete header
 		cerr << "The encryption header is incomplete\n";
-		exit(1);
+		return;
 	}
 
 	unsigned char tag = 0;
@@ -413,6 +415,8 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 
 void handleServer(const SOCKET ClientSocket)
 {
+	if (ClientSocket == INVALID_SOCKET)
+		return;
 	// Key Exchange
 	//=======================================================
 	unsigned char server_pk[crypto_kx_PUBLICKEYBYTES];
@@ -426,6 +430,7 @@ void handleServer(const SOCKET ClientSocket)
 	if (crypto_kx_client_session_keys(client_rx, client_tx,
 		client_pk, client_sk, server_pk) != 0) {
 		cerr << "Suspicious server public key\n";
+		return;
 	}
 	cerr << "Client Key Exchange done\n";
 	//=======================================================
@@ -434,10 +439,8 @@ void handleServer(const SOCKET ClientSocket)
 	if (!is.is_open())
 	{
 		cerr << "The input file cannot be opened!\n";
-		WSACleanup();
-		exit(1);
+		return;
 	}
-	cerr << "Sending " << FileName << endl;
 	unsigned char  buf_in[CHUNK_SIZE];
 	unsigned char  buf_out[CHUNK_SIZE + crypto_secretstream_xchacha20poly1305_ABYTES];
 	unsigned char  header[crypto_secretstream_xchacha20poly1305_HEADERBYTES];
