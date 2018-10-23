@@ -425,6 +425,10 @@ int main(int argc, char** argv)
 				WSACleanup();
 				return 1;
 			}
+			if (vm.count("name"))
+			{
+				cerr << "name is ignored\n";
+			}
 			Client_v4 cl_v4("224.0.0.1", vm["port"].as<int>());
 			Client_v6 cl_v6("ff02::1", vm["port"].as<int>());
 			receiveMultiCast(cl_v4.ClientSocket, false);
