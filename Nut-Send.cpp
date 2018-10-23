@@ -54,7 +54,11 @@ public:
 
 	void close()
 	{
-		closesocket(ServerSocket);
+		int Ret = closesocket(ServerSocket);
+		if (Ret == SOCKET_ERROR)
+		{
+			cerr << "close() failed\n";
+		}
 	}
 
 
@@ -119,7 +123,7 @@ private:
 				cerr << "accept() failed\n";
 				continue;
 			}
-			char ADDRBuffer[INET6_ADDRSTRLEN];
+			char ADDRBuffer[INET_ADDRSTRLEN];
 			const char *ADDR = inet_ntop(AF_INET, &ClientAddr.sin_addr, ADDRBuffer,
 				sizeof(ADDRBuffer));
 			if (ADDR)
@@ -133,7 +137,11 @@ private:
 	void handleClientRequest(const SOCKET Client, const char* ADDR)
 	{
 		Func(Client, ADDR, server_pk, server_sk);
-		closesocket(Client);
+		int Ret = closesocket(Client);
+		if (Ret == SOCKET_ERROR)
+		{
+			cerr << "close() failed\n";
+		}
 	}
 
 	// These two keys are reused each session.
@@ -157,7 +165,11 @@ public:
 
 	void close()
 	{
-		closesocket(ServerSocket);
+		int Ret = closesocket(ServerSocket);
+		if (Ret == SOCKET_ERROR)
+		{
+			cerr << "close() failed\n";
+		}
 	}
 
 
@@ -236,7 +248,11 @@ private:
 	void handleClientRequest(const SOCKET Client, const char* ADDR)
 	{
 		Func(Client, ADDR, server_pk, server_sk);
-		closesocket(Client);
+		int Ret = closesocket(Client);
+		if (Ret == SOCKET_ERROR)
+		{
+			cerr << "close() failed\n";
+		}
 	}
 
 	// These two keys are reused each session.
@@ -252,7 +268,11 @@ public:
 	}
 	void close()
 	{
-		closesocket(ClientSocket);
+		int Ret = closesocket(ClientSocket);
+		if (Ret == SOCKET_ERROR)
+		{
+			cerr << "close() failed\n";
+		}
 	}
 	SOCKET ClientSocket;
 private:
@@ -275,7 +295,11 @@ private:
 		if (Ret == SOCKET_ERROR)
 		{
 			cerr << "connect() failed\n";
-			closesocket(Client);
+			int Ret = closesocket(Client);
+			if (Ret == SOCKET_ERROR)
+			{
+				cerr << "close() failed\n";
+			}
 			Client = INVALID_SOCKET;
 		}
 		return Client;
@@ -291,7 +315,11 @@ public:
 	}
 	void close()
 	{
-		closesocket(ClientSocket);
+		int Ret = closesocket(ClientSocket);
+		if (Ret == SOCKET_ERROR)
+		{
+			cerr << "close() failed\n";
+		}
 	}
 	SOCKET ClientSocket;
 private:
@@ -314,7 +342,11 @@ private:
 		if (Ret == SOCKET_ERROR)
 		{
 			cerr << "connect() failed\n";
-			closesocket(Client);
+			int Ret = closesocket(Client);
+			if (Ret == SOCKET_ERROR)
+			{
+				cerr << "close() failed\n";
+			}
 			Client = INVALID_SOCKET;
 		}
 		return Client;
@@ -329,8 +361,18 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 	unsigned char client_pk[crypto_kx_PUBLICKEYBYTES];
 	unsigned char server_rx[crypto_kx_SESSIONKEYBYTES], server_tx[crypto_kx_SESSIONKEYBYTES];
 	// Client send public key first
-	recv(ServerSocket, reinterpret_cast<char*>(client_pk), crypto_kx_PUBLICKEYBYTES, MSG_WAITALL);
-	send(ServerSocket, reinterpret_cast<char*>(server_pk), crypto_kx_PUBLICKEYBYTES, 0);
+	int Ret = recv(ServerSocket, reinterpret_cast<char*>(client_pk), crypto_kx_PUBLICKEYBYTES, MSG_WAITALL);
+	if (Ret == SOCKET_ERROR)
+	{
+		cerr << "recv() failed\n";
+		return;
+	}
+	Ret = send(ServerSocket, reinterpret_cast<char*>(server_pk), crypto_kx_PUBLICKEYBYTES, 0);
+	if (Ret == SOCKET_ERROR)
+	{
+		cerr << "send() failed\n";
+		return;
+	}
 	if (crypto_kx_server_session_keys(server_rx, server_tx,
 		server_pk, server_sk, client_pk) != 0) {
 		cerr << "Suspicious client public key\n";
@@ -367,11 +409,16 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 		cerr << "recv() failed\n";
 		return;
 	}
-	memset(buf_out, 0, sizeof(buf_out));
+
 	if (crypto_secretstream_xchacha20poly1305_pull(&st, buf_out, &out_len, &tag,
 		buf_in, rlen, NULL, 0) != 0) {
 		// corrupted chunk
 		cerr << "The file_name is corrupted\n";
+		return;
+	}
+
+	if (tag != crypto_secretstream_xchacha20poly1305_TAG_PUSH) {
+		cerr << "The file_name_tag is corrupted\n";
 		return;
 	}
 
@@ -408,7 +455,11 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 		}
 	}
 	os.close();
-	shutdown(ServerSocket, SD_BOTH);
+	Ret = shutdown(ServerSocket, SD_BOTH);
+	if (Ret == SOCKET_ERROR)
+	{
+		cerr << "shutdown() failed\n";
+	}
 	cerr << "The file has been successfully received\n";
 }
 
@@ -424,9 +475,19 @@ void handleServer(const SOCKET ClientSocket)
 	unsigned char client_rx[crypto_kx_SESSIONKEYBYTES], client_tx[crypto_kx_SESSIONKEYBYTES];
 	crypto_kx_keypair(client_pk, client_sk);
 	// Client send public key first
-	send(ClientSocket, reinterpret_cast<char*>(client_pk), crypto_kx_PUBLICKEYBYTES, 0);
+	int Ret = send(ClientSocket, reinterpret_cast<char*>(client_pk), crypto_kx_PUBLICKEYBYTES, 0);
+	if (Ret == SOCKET_ERROR)
+	{
+		cerr << "send() failed\n";
+		return;
+	}
 	// Get Server's public key
 	int ReadLen = recv(ClientSocket, reinterpret_cast<char*>(server_pk), crypto_kx_PUBLICKEYBYTES, MSG_WAITALL);
+	if (ReadLen == SOCKET_ERROR)
+	{
+		cerr << "recv() failed\n";
+		return;
+	}
 	if (crypto_kx_client_session_keys(client_rx, client_tx,
 		client_pk, client_sk, server_pk) != 0) {
 		cerr << "Suspicious server public key\n";
@@ -447,7 +508,13 @@ void handleServer(const SOCKET ClientSocket)
 	crypto_secretstream_xchacha20poly1305_state st;
 	crypto_secretstream_xchacha20poly1305_init_push(&st, header, client_tx);
 	// Send header
-	send(ClientSocket, reinterpret_cast<const char*>(header), crypto_secretstream_xchacha20poly1305_HEADERBYTES, 0);
+	Ret = send(ClientSocket, reinterpret_cast<const char*>(header), crypto_secretstream_xchacha20poly1305_HEADERBYTES, 0);
+	if (Ret == SOCKET_ERROR)
+	{
+		cerr << "send() failed\n";
+		is.close();
+		return;
+	}
 	bool eof = is.eof();
 	unsigned char tag = 0;
 	unsigned long long out_len;
@@ -458,7 +525,7 @@ void handleServer(const SOCKET ClientSocket)
 	crypto_secretstream_xchacha20poly1305_push(&st, buf_out, &out_len,
 		buf_in, CHUNK_SIZE,
 		NULL, 0, crypto_secretstream_xchacha20poly1305_TAG_PUSH);
-	int Ret = send(ClientSocket, reinterpret_cast<char*>(buf_out), static_cast<int>(out_len), 0);
+	Ret = send(ClientSocket, reinterpret_cast<char*>(buf_out), static_cast<int>(out_len), 0);
 	if (Ret == SOCKET_ERROR)
 	{
 		cerr << "send() failed\n";
@@ -481,7 +548,11 @@ void handleServer(const SOCKET ClientSocket)
 			break;
 		}
 	} while (!eof);
-	shutdown(ClientSocket, SD_BOTH);
+	Ret = shutdown(ClientSocket, SD_BOTH);
+	if (Ret == SOCKET_ERROR)
+	{
+		cerr << "shutdown() failed\n";
+	}
 	is.close();
 }
 
