@@ -15,6 +15,9 @@
 #include <exception>
 #include <boost/program_options.hpp>
 #include <filesystem>
+#include <Windows.h>
+#include <zstd.h>
+#include <malloc.h>
 
 namespace fs = std::filesystem;
 
@@ -40,7 +43,7 @@ void initWSA()
 class Server_v4
 {
 public:
-	Server_v4(const int port) :ServerPort(port) { crypto_kx_keypair(server_pk, server_sk); }
+	Server_v4(const int port) :ServerPort(port), ServerSocket(INVALID_SOCKET) { crypto_kx_keypair(server_pk, server_sk); }
 
 	void serveForever() {
 		ServerSocket = createServerSocket(ServerPort);
@@ -151,7 +154,7 @@ private:
 class Server_v6
 {
 public:
-	Server_v6(const int port) :ServerPort(port) { crypto_kx_keypair(server_pk, server_sk); }
+	Server_v6(const int port) :ServerPort(port), ServerSocket(INVALID_SOCKET) { crypto_kx_keypair(server_pk, server_sk); }
 
 	void serveForever() {
 		ServerSocket = createServerSocket(ServerPort);
@@ -430,31 +433,150 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 	string Output = ".\\Files\\" + string(fname) + string(fext);
 	cerr << "Receiving " << Output << endl;
 	ofstream os(Output, ios::binary | ios::trunc | ios::out);
+
+	// Decompress
+
+	// Create pipe for decompressing.
+	HANDLE hReadPipe, hWritePipe;
+	Ret = CreatePipe(&hReadPipe, &hWritePipe, NULL, static_cast<DWORD>(max(ZSTD_DStreamInSize(), CHUNK_SIZE)));
+	if (Ret == 0)
+	{
+		cerr << "CreatePipe() failed\n";
+		os.close();
+		remove(Output.c_str());
+		return;
+	}
+
+	auto Decompressor = [&os, &hReadPipe, &Output]()
+	{
+		size_t const buffInSize = ZSTD_DStreamInSize();
+		// Guarantee to successfully flush at least one complete compressed block in all circumstances.
+		size_t const buffOutSize = ZSTD_DStreamOutSize();
+		void* const buffIn = malloc(buffInSize);
+		void* const buffOut = malloc(buffOutSize);
+		ZSTD_DStream* const dstream = ZSTD_createDStream();
+		if (dstream == nullptr)
+		{
+			cerr << "ZSTD_createDStream() failed\n";
+			os.close();
+			remove(Output.c_str());
+			// Inside thread, we use abort().
+			abort();
+		}
+		size_t const initResult = ZSTD_initDStream(dstream);
+		if (ZSTD_isError(initResult))
+		{
+			cerr << "ZSTD_initDStream() error : " << ZSTD_getErrorName(initResult) << "\n";
+			os.close();
+			remove(Output.c_str());
+			// Inside thread, we use abort().
+			abort();
+		}
+
+		// Decompressing...
+		size_t toRead = initResult;
+		// Ensure the sizeof char is 1
+		static_assert(sizeof(char) == 1);
+
+		bool eof = false;
+		do
+		{
+			DWORD rlen, real_rlen = 0;
+			DWORD TEMP_CHUNK_SIZE = static_cast<DWORD>(toRead);
+			char* temp_buf_in = reinterpret_cast<char*>(buffIn);
+			BOOL Ret = ReadFile(hReadPipe, temp_buf_in, TEMP_CHUNK_SIZE, &rlen, NULL);
+			real_rlen += rlen; // Add rlen to rrlen
+			// EOF is not reached.
+			while (Ret == TRUE && rlen != TEMP_CHUNK_SIZE)
+			{
+				TEMP_CHUNK_SIZE -= rlen;
+				temp_buf_in += rlen;
+				Ret = ReadFile(hReadPipe, temp_buf_in, TEMP_CHUNK_SIZE, &rlen, NULL);
+				real_rlen += rlen; // Add rlen to rrlen
+			}
+			// EOF is reached
+			eof = ((Ret == FALSE) && (GetLastError() == ERROR_BROKEN_PIPE));
+
+			ZSTD_inBuffer input = { buffIn, real_rlen, 0 };
+			ZSTD_outBuffer output = { buffOut, buffOutSize, 0 };
+
+			while (input.pos < input.size || output.pos == output.size)
+			{
+				output = { buffOut, buffOutSize, 0 };
+				toRead = ZSTD_decompressStream(dstream, &output, &input);
+				if (ZSTD_isError(toRead))
+				{
+					cerr << "ZSTD_decompressStream() error : " << ZSTD_getErrorName(toRead) << "\n";
+					os.close();
+					remove(Output.c_str());
+					break;
+				}
+				os.write(reinterpret_cast<char*>(buffOut), output.pos);
+			}
+		} while (!eof);
+
+		// Cleanup Resources
+		ZSTD_freeDStream(dstream);
+		::free(buffIn);
+		::free(buffOut);
+		os.close();
+		{
+			int Ret = CloseHandle(hReadPipe);
+			if (Ret == 0)
+			{
+				cerr << "Decompressor CloseHandle() filed" << endl;
+			}
+		}
+	};
+
+	thread t(Decompressor);
+
 	while (true)
 	{
 		rlen = recv(ServerSocket, reinterpret_cast<char*>(buf_in), CHUNK_SIZE + crypto_secretstream_xchacha20poly1305_ABYTES, MSG_WAITALL);
 		if (rlen == SOCKET_ERROR)
 		{
 			cerr << "recv() failed\n";
+			// Force close, even for the decompressor.
 			os.close();
 			remove(Output.c_str());
-			return;
+			break;
 		}
 		if (crypto_secretstream_xchacha20poly1305_pull(&st, buf_out, &out_len, &tag,
 			buf_in, rlen, NULL, 0) != 0) {
 			// corrupted chunk
 			cerr << "The file is corrupted\n";
+			// Force close, even for the decompressor.
 			os.close();
 			remove(Output.c_str());
-			return;
-		}
-		os.write(reinterpret_cast<char*>(buf_out), out_len);
-		if (tag == crypto_secretstream_xchacha20poly1305_TAG_FINAL) {
-			os.close();
 			break;
 		}
+		DWORD NumberOfBytesWritten;
+		{
+			BOOL Ret = WriteFile(hWritePipe, buf_out, static_cast<DWORD>(out_len), &NumberOfBytesWritten, NULL);
+			if (Ret == FALSE)
+			{
+				cerr << "WriteFile() failed\n";
+				// Force close, even for the decompressor.
+				os.close();
+				remove(Output.c_str());
+				break;
+			}
+		}
+		if (tag == crypto_secretstream_xchacha20poly1305_TAG_FINAL)
+			break;
 	}
-	os.close();
+
+
+	// Finish Compressor execution
+	Ret = CloseHandle(hWritePipe);
+	if (Ret == 0)
+	{
+		cerr << "CloseHandle() filed" << endl;
+	}
+
+	t.join();
+
 	Ret = shutdown(ServerSocket, SD_BOTH);
 	if (Ret == SOCKET_ERROR)
 	{
@@ -518,8 +640,9 @@ void handleServer(const SOCKET ClientSocket)
 	bool eof = is.eof();
 	unsigned char tag = 0;
 	unsigned long long out_len;
-	size_t rlen;
+	DWORD rlen;
 	// Send filename
+	// Because filename is trivially small, so we do not compress it and send it as a whole.
 	memset(buf_in, 0, sizeof(buf_in));
 	strcpy_s(reinterpret_cast<char*>(buf_in), CHUNK_SIZE, FileName.c_str());
 	crypto_secretstream_xchacha20poly1305_push(&st, buf_out, &out_len,
@@ -532,14 +655,132 @@ void handleServer(const SOCKET ClientSocket)
 		is.close();
 		return;
 	}
+
 	// Send file
+
+	// Create pipe for compressing.
+	HANDLE hReadPipe, hWritePipe;
+	Ret = CreatePipe(&hReadPipe, &hWritePipe, NULL, static_cast<DWORD>(max(ZSTD_CStreamOutSize(), CHUNK_SIZE)));
+	if (Ret == 0)
+	{
+		cerr << "CreatePipe() failed\n";
+		is.close();
+		return;
+	}
+
+	auto Compressor = [&is, &hWritePipe]()
+	{
+		// Allocate Resources
+		bool eof;
+		size_t const buffInSize = ZSTD_CStreamInSize();
+		size_t const buffOutSize = ZSTD_CStreamOutSize();
+		void* const buffIn = malloc(buffInSize);
+		void* const buffOut = malloc(buffOutSize);
+		ZSTD_CStream* const cstream = ZSTD_createCStream();
+		if (cstream == nullptr)
+		{
+			cerr << "ZSTD_createCStream() failed\n";
+			is.close();
+			// Inside thread, we use abort().
+			abort();
+		}
+		size_t const initResult = ZSTD_initCStream(cstream, ZSTD_CLEVEL_DEFAULT);
+		if (ZSTD_isError(initResult))
+		{
+			cerr << "ZSTD_initCStream() error : " << ZSTD_getErrorName(initResult) << "\n";
+			// Inside thread, we use abort().
+			abort();
+		}
+
+		// Compressing...
+		size_t rlen, toRead = buffInSize;
+		// Ensure the sizeof char is 1
+		static_assert(sizeof(char) == 1);
+		do
+		{
+			is.read(reinterpret_cast<char*>(buffIn), toRead);
+			rlen = is.gcount();
+			eof = is.eof();
+			ZSTD_inBuffer input = { buffIn,rlen,0 };
+			while (input.pos < input.size)
+			{
+				ZSTD_outBuffer output = { buffOut, buffOutSize,0 };
+				// toRead is guaranteed to be <= ZSTD_CStreamInSize()
+				toRead = ZSTD_compressStream(cstream, &output, &input);
+				if (ZSTD_isError(toRead))
+				{
+					cerr << "ZSTD_compressStream() error : " << ZSTD_getErrorName(initResult) << "\n";
+					// Inside thread, we use abort().
+					abort();
+				}
+				// Safe to modify buffInSize.
+				if (toRead > buffInSize)
+					toRead = buffInSize;
+				// Write to pipe.
+				DWORD NumberOfBytesWritten;
+				BOOL Ret = WriteFile(hWritePipe, buffOut, static_cast<DWORD>(output.pos), &NumberOfBytesWritten, NULL);
+				if (Ret == FALSE)
+				{
+					cerr << "WriteFile1() error: " << GetLastError() << "\n";
+					// Inside thread, we use abort().
+					abort();
+				}
+			}
+		} while (!eof);
+		ZSTD_outBuffer output = { buffOut, buffOutSize,0 };
+		size_t const remainingToFlush = ZSTD_endStream(cstream, &output);   /* close frame */
+		if (remainingToFlush)
+		{
+			cerr << "not fully flushed" << "\n";
+			// Inside thread, we use abort().
+			abort();
+		}
+		// Write to pipe.
+		DWORD NumberOfBytesWritten;
+		BOOL Ret = WriteFile(hWritePipe, buffOut, static_cast<DWORD>(output.pos), &NumberOfBytesWritten, NULL);
+		if (Ret == FALSE)
+		{
+			cerr << "WriteFile2() error: " << GetLastError() << "\n";
+			// Inside thread, we use abort().
+			abort();
+		}
+
+		// Cleanup Resources
+		ZSTD_freeCStream(cstream);
+		::free(buffIn);
+		::free(buffOut);
+		{
+			int Ret = CloseHandle(hWritePipe);
+			if (Ret == 0)
+			{
+				cerr << "Compressor CloseHandle() filed" << endl;
+			}
+		}
+	};
+
+	thread t(Compressor);
+
 	do
 	{
-		is.read(reinterpret_cast<char*>(buf_in), CHUNK_SIZE);
-		rlen = is.gcount();
-		eof = is.eof();
+		DWORD real_rlen = 0;
+		DWORD TEMP_CHUNK_SIZE = static_cast<DWORD>(CHUNK_SIZE);
+		unsigned char* temp_buf_in = buf_in;
+		BOOL Ret = ReadFile(hReadPipe, temp_buf_in, TEMP_CHUNK_SIZE, &rlen, NULL);
+		real_rlen += rlen; // Add rlen to rrlen
+
+		// EOF is not reached.
+		while (Ret == TRUE && rlen != TEMP_CHUNK_SIZE)
+		{
+			TEMP_CHUNK_SIZE -= rlen;
+			temp_buf_in += rlen;
+			Ret = ReadFile(hReadPipe, temp_buf_in, TEMP_CHUNK_SIZE, &rlen, NULL);
+			real_rlen += rlen; // Add rlen to rrlen
+		}
+		// EOF is reached
+		eof = ((Ret == FALSE) && (GetLastError() == ERROR_BROKEN_PIPE));
+
 		tag = eof ? crypto_secretstream_xchacha20poly1305_TAG_FINAL : 0;
-		crypto_secretstream_xchacha20poly1305_push(&st, buf_out, &out_len, buf_in, rlen,
+		crypto_secretstream_xchacha20poly1305_push(&st, buf_out, &out_len, buf_in, real_rlen,
 			NULL, 0, tag);
 		Ret = send(ClientSocket, reinterpret_cast<char*>(buf_out), static_cast<int>(out_len), 0);
 		if (Ret == SOCKET_ERROR)
@@ -548,6 +789,16 @@ void handleServer(const SOCKET ClientSocket)
 			break;
 		}
 	} while (!eof);
+
+	// Finish Compressor execution
+	Ret = CloseHandle(hReadPipe);
+	if (Ret == 0)
+	{
+		cerr << "CloseHandle() filed" << endl;
+	}
+
+	t.join();
+
 	Ret = shutdown(ClientSocket, SD_BOTH);
 	if (Ret == SOCKET_ERROR)
 	{
