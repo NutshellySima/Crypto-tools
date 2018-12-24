@@ -18,6 +18,8 @@
 #include <Windows.h>
 #include <zstd.h>
 #include <malloc.h>
+#include <mutex>
+#include <nlohmann/json.hpp>
 
 namespace fs = std::filesystem;
 
@@ -26,8 +28,11 @@ namespace fs = std::filesystem;
 namespace po = boost::program_options;
 
 using namespace std;
+using namespace nlohmann;
 
 constexpr size_t CHUNK_SIZE = 4096;
+
+mutex io_mutex;
 
 void initWSA()
 {
@@ -35,7 +40,14 @@ void initWSA()
 	auto mWSA = WSADATA();
 	if (0 != WSAStartup(mWSAver, &mWSA))
 	{
-		cerr << "WSAStartup() failed\n";
+		{
+			json OutputJ;
+			OutputJ["action"] = "startup";
+			OutputJ["status"] = "error";
+			OutputJ["reason"] = "WSAStartup() failed";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
+		}
 		exit(1);
 	}
 }
@@ -60,7 +72,12 @@ public:
 		int Ret = closesocket(ServerSocket);
 		if (Ret == SOCKET_ERROR)
 		{
-			cerr << "close() failed\n";
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "warning";
+			OutputJ["reason"] = "close() failed";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
 		}
 	}
 
@@ -78,7 +95,14 @@ private:
 		SOCKET Server = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 		if (Server == INVALID_SOCKET)
 		{
-			cerr << "socket() failed\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "startup";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "socket() failed";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			WSACleanup();
 			exit(1);
 		}
@@ -91,7 +115,14 @@ private:
 		int BindRes = ::bind(Server, (struct sockaddr *)&ServerAddr, sizeof(ServerAddr));
 		if (BindRes == SOCKET_ERROR)
 		{
-			cerr << "bind() failed\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "startup";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "bind() failed";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			WSACleanup();
 			exit(1);
 		}
@@ -99,14 +130,28 @@ private:
 		int Ret = setsockopt(Server, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<char*>(&Enable), sizeof(int));
 		if (Ret == SOCKET_ERROR)
 		{
-			cerr << "setsockopt() failed\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "startup";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "setsockopt() failed";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			WSACleanup();
 			exit(1);
 		}
 		int ListenRes = listen(Server, 128);
 		if (ListenRes == SOCKET_ERROR)
 		{
-			cerr << "listen() failed\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "startup";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "listen() failed";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			WSACleanup();
 			exit(1);
 		}
@@ -123,16 +168,37 @@ private:
 			Client = accept(Server, (struct sockaddr *)&ClientAddr, &ClientAddrSize);
 			if (Client == INVALID_SOCKET)
 			{
-				cerr << "accept() failed\n";
+				{
+					json OutputJ;
+					OutputJ["action"] = "transmit";
+					OutputJ["status"] = "warning";
+					OutputJ["reason"] = "accept() failed";
+					std::lock_guard<std::mutex> lk(io_mutex);
+					cout << OutputJ.dump() << endl;
+				}
 				continue;
 			}
 			char ADDRBuffer[INET_ADDRSTRLEN];
 			const char *ADDR = inet_ntop(AF_INET, &ClientAddr.sin_addr, ADDRBuffer,
 				sizeof(ADDRBuffer));
 			if (ADDR)
-				cerr << "Connection Request: " << ADDR << ":" << ntohs(ClientAddr.sin_port) << "\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "transmit";
+				OutputJ["status"] = "info";
+				OutputJ["reason"] = string("Connection Request: " + string(ADDR) + ":" + to_string(ntohs(ClientAddr.sin_port)));
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			else
-				cerr << "inet_ntop() err.\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "transmit";
+				OutputJ["status"] = "warning";
+				OutputJ["reason"] = "inet_ntop() failed";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			std::thread(&Server_v4::handleClientRequest, this, Client, ADDR).detach();
 		}
 	}
@@ -143,7 +209,12 @@ private:
 		int Ret = closesocket(Client);
 		if (Ret == SOCKET_ERROR)
 		{
-			cerr << "close() failed\n";
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "warning";
+			OutputJ["reason"] = "close() failed";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
 		}
 	}
 
@@ -171,7 +242,12 @@ public:
 		int Ret = closesocket(ServerSocket);
 		if (Ret == SOCKET_ERROR)
 		{
-			cerr << "close() failed\n";
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "warning";
+			OutputJ["reason"] = "close() failed";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
 		}
 	}
 
@@ -189,7 +265,14 @@ private:
 		SOCKET Server = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
 		if (Server == INVALID_SOCKET)
 		{
-			cerr << "socket() failed\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "startup";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "socket() failed";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			WSACleanup();
 			exit(1);
 		}
@@ -202,7 +285,14 @@ private:
 		int BindRes = ::bind(Server, (struct sockaddr *)&ServerAddr, sizeof(ServerAddr));
 		if (BindRes == SOCKET_ERROR)
 		{
-			cerr << "bind() failed\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "startup";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "bind() failed";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			WSACleanup();
 			exit(1);
 		}
@@ -210,14 +300,28 @@ private:
 		int Ret = setsockopt(Server, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<char*>(&Enable), sizeof(int));
 		if (Ret == SOCKET_ERROR)
 		{
-			cerr << "setsockopt() failed\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "startup";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "setsockopt() failed";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			WSACleanup();
 			exit(1);
 		}
 		int ListenRes = listen(Server, 128);
 		if (ListenRes == SOCKET_ERROR)
 		{
-			cerr << "listen() failed\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "startup";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "listen() failed";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			WSACleanup();
 			exit(1);
 		}
@@ -234,16 +338,37 @@ private:
 			Client = accept(Server, (struct sockaddr *)&ClientAddr, &ClientAddrSize);
 			if (Client == INVALID_SOCKET)
 			{
-				cerr << "accept() failed\n";
+				{
+					json OutputJ;
+					OutputJ["action"] = "transmit";
+					OutputJ["status"] = "warning";
+					OutputJ["reason"] = "accept() failed";
+					std::lock_guard<std::mutex> lk(io_mutex);
+					cout << OutputJ.dump() << endl;
+				}
 				continue;
 			}
 			char ADDRBuffer[INET6_ADDRSTRLEN];
 			const char *ADDR = inet_ntop(AF_INET6, &ClientAddr.sin6_addr, ADDRBuffer,
 				sizeof(ADDRBuffer));
 			if (ADDR)
-				cerr << "Connection Request: " << ADDR << ":" << ntohs(ClientAddr.sin6_port) << "\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "transmit";
+				OutputJ["status"] = "info";
+				OutputJ["reason"] = string("Connection Request: " + string(ADDR) + ":" + to_string(ntohs(ClientAddr.sin6_port)));
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			else
-				cerr << "inet_ntop() err.\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "transmit";
+				OutputJ["status"] = "warning";
+				OutputJ["reason"] = "inet_ntop() failed";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			std::thread(&Server_v6::handleClientRequest, this, Client, ADDR).detach();
 		}
 	}
@@ -254,7 +379,12 @@ private:
 		int Ret = closesocket(Client);
 		if (Ret == SOCKET_ERROR)
 		{
-			cerr << "close() failed\n";
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "warning";
+			OutputJ["reason"] = "close() failed";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
 		}
 	}
 
@@ -274,7 +404,12 @@ public:
 		int Ret = closesocket(ClientSocket);
 		if (Ret == SOCKET_ERROR)
 		{
-			cerr << "close() failed\n";
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "warning";
+			OutputJ["reason"] = "close() failed";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
 		}
 	}
 	SOCKET ClientSocket;
@@ -285,7 +420,14 @@ private:
 		SOCKET Client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 		if (Client == INVALID_SOCKET)
 		{
-			cerr << "socket() failed\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "startup";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "socket() failed";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			WSACleanup();
 			exit(1);
 		}
@@ -297,11 +439,23 @@ private:
 		int Ret = connect(Client, (struct sockaddr*)&ClientAddr, sizeof(ClientAddr));
 		if (Ret == SOCKET_ERROR)
 		{
-			cerr << "connect() failed\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "transmit";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "connect() failed";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			int Ret = closesocket(Client);
 			if (Ret == SOCKET_ERROR)
 			{
-				cerr << "close() failed\n";
+				json OutputJ;
+				OutputJ["action"] = "transmit";
+				OutputJ["status"] = "warning";
+				OutputJ["reason"] = "close() failed";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
 			}
 			Client = INVALID_SOCKET;
 		}
@@ -321,7 +475,12 @@ public:
 		int Ret = closesocket(ClientSocket);
 		if (Ret == SOCKET_ERROR)
 		{
-			cerr << "close() failed\n";
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "warning";
+			OutputJ["reason"] = "close() failed";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
 		}
 	}
 	SOCKET ClientSocket;
@@ -332,7 +491,14 @@ private:
 		SOCKET Client = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
 		if (Client == INVALID_SOCKET)
 		{
-			cerr << "socket() failed\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "startup";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "socket() failed";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			WSACleanup();
 			exit(1);
 		}
@@ -344,11 +510,23 @@ private:
 		int Ret = connect(Client, (struct sockaddr*)&ClientAddr, sizeof(ClientAddr));
 		if (Ret == SOCKET_ERROR)
 		{
-			cerr << "connect() failed\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "transmit";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "connect() failed";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			int Ret = closesocket(Client);
 			if (Ret == SOCKET_ERROR)
 			{
-				cerr << "close() failed\n";
+				json OutputJ;
+				OutputJ["action"] = "transmit";
+				OutputJ["status"] = "warning";
+				OutputJ["reason"] = "close() failed";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
 			}
 			Client = INVALID_SOCKET;
 		}
@@ -367,21 +545,50 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 	int Ret = recv(ServerSocket, reinterpret_cast<char*>(client_pk), crypto_kx_PUBLICKEYBYTES, MSG_WAITALL);
 	if (Ret == SOCKET_ERROR)
 	{
-		cerr << "recv() failed\n";
+		{
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "warning";
+			OutputJ["reason"] = "recv() failed";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
+		}
 		return;
 	}
 	Ret = send(ServerSocket, reinterpret_cast<char*>(server_pk), crypto_kx_PUBLICKEYBYTES, 0);
 	if (Ret == SOCKET_ERROR)
 	{
-		cerr << "send() failed\n";
+		{
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "warning";
+			OutputJ["reason"] = "send() failed";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
+		}
 		return;
 	}
 	if (crypto_kx_server_session_keys(server_rx, server_tx,
-		server_pk, server_sk, client_pk) != 0) {
-		cerr << "Suspicious client public key\n";
+		server_pk, server_sk, client_pk) != 0)
+	{
+		{
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "warning";
+			OutputJ["reason"] = "Suspicious client public key";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
+		}
 		return;
 	}
-	cerr << "Server Key Exchange done\n";
+	{
+		json OutputJ;
+		OutputJ["action"] = "transmit";
+		OutputJ["status"] = "info";
+		OutputJ["reason"] = "Server Key Exchange done";
+		std::lock_guard<std::mutex> lk(io_mutex);
+		cout << OutputJ.dump() << endl;
+	}
 	//=======================================================
 	// Server only receives, so we only use server_rx here.
 	unsigned char  buf_in[CHUNK_SIZE + crypto_secretstream_xchacha20poly1305_ABYTES];
@@ -392,12 +599,26 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 	int gcount = recv(ServerSocket, reinterpret_cast<char*>(header), crypto_secretstream_xchacha20poly1305_HEADERBYTES, MSG_WAITALL);
 	if (gcount != crypto_secretstream_xchacha20poly1305_HEADERBYTES)
 	{
-		cerr << "The input stream is broken!\n";
+		{
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "warning";
+			OutputJ["reason"] = "The input stream is broken!";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
+		}
 		return;
 	}
 	if (crypto_secretstream_xchacha20poly1305_init_pull(&st, header, server_rx) != 0) {
 		// incomplete header
-		cerr << "The encryption header is incomplete\n";
+		{
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "warning";
+			OutputJ["reason"] = "The encryption header is incomplete";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
+		}
 		return;
 	}
 
@@ -409,19 +630,42 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 	rlen = recv(ServerSocket, reinterpret_cast<char*>(buf_in), CHUNK_SIZE + crypto_secretstream_xchacha20poly1305_ABYTES, MSG_WAITALL);
 	if (rlen == SOCKET_ERROR)
 	{
-		cerr << "recv() failed\n";
+		{
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "warning";
+			OutputJ["reason"] = "recv() failed";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
+		}
 		return;
 	}
 
 	if (crypto_secretstream_xchacha20poly1305_pull(&st, buf_out, &out_len, &tag,
-		buf_in, rlen, NULL, 0) != 0) {
+		buf_in, rlen, NULL, 0) != 0)
+	{
+		{
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "warning";
+			OutputJ["reason"] = "The file name is corrupted";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
+		}
 		// corrupted chunk
-		cerr << "The file_name is corrupted\n";
 		return;
 	}
 
-	if (tag != crypto_secretstream_xchacha20poly1305_TAG_PUSH) {
-		cerr << "The file_name_tag is corrupted\n";
+	if (tag != crypto_secretstream_xchacha20poly1305_TAG_PUSH)
+	{
+		{
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "warning";
+			OutputJ["reason"] = "The file_name_tag is corrupted";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
+		}
 		return;
 	}
 
@@ -431,7 +675,15 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 	_splitpath_s(reinterpret_cast<const char*>(buf_out),
 		nullptr, 0, nullptr, 0, fname, _MAX_FNAME, fext, _MAX_EXT);
 	string Output = ".\\Files\\" + string(fname) + string(fext);
-	cerr << "Receiving " << Output << endl;
+	{
+		json OutputJ;
+		OutputJ["action"] = "transmit";
+		OutputJ["status"] = "info";
+		OutputJ["reason"] = "Receiving " + Output;
+		OutputJ["file"] = Output;
+		std::lock_guard<std::mutex> lk(io_mutex);
+		cout << OutputJ.dump() << endl;
+	}
 	ofstream os(Output, ios::binary | ios::trunc | ios::out);
 
 	// Decompress
@@ -441,7 +693,15 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 	Ret = CreatePipe(&hReadPipe, &hWritePipe, NULL, static_cast<DWORD>(max(ZSTD_DStreamInSize(), CHUNK_SIZE)));
 	if (Ret == 0)
 	{
-		cerr << "CreatePipe() failed\n";
+		{
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "error";
+			OutputJ["reason"] = "CreatePipe() failed";
+			OutputJ["file"] = Output;
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
+		}
 		os.close();
 		remove(Output.c_str());
 		return;
@@ -457,7 +717,15 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 		ZSTD_DStream* const dstream = ZSTD_createDStream();
 		if (dstream == nullptr)
 		{
-			cerr << "ZSTD_createDStream() failed\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "transmit";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "ZSTD_createDStream() failed";
+				OutputJ["file"] = Output;
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			os.close();
 			remove(Output.c_str());
 			// Inside thread, we use abort().
@@ -466,7 +734,15 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 		size_t const initResult = ZSTD_initDStream(dstream);
 		if (ZSTD_isError(initResult))
 		{
-			cerr << "ZSTD_initDStream() error : " << ZSTD_getErrorName(initResult) << "\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "transmit";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "ZSTD_initDStream() error : " + string(ZSTD_getErrorName(initResult));
+				OutputJ["file"] = Output;
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			os.close();
 			remove(Output.c_str());
 			// Inside thread, we use abort().
@@ -506,7 +782,15 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 				toRead = ZSTD_decompressStream(dstream, &output, &input);
 				if (ZSTD_isError(toRead))
 				{
-					cerr << "ZSTD_decompressStream() error : " << ZSTD_getErrorName(toRead) << "\n";
+					{
+						json OutputJ;
+						OutputJ["action"] = "transmit";
+						OutputJ["status"] = "warning";
+						OutputJ["reason"] = "ZSTD_decompressStream() error : " + string(ZSTD_getErrorName(toRead));
+						OutputJ["file"] = Output;
+						std::lock_guard<std::mutex> lk(io_mutex);
+						cout << OutputJ.dump() << endl;
+					}
 					os.close();
 					remove(Output.c_str());
 					break;
@@ -524,7 +808,13 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 			int Ret = CloseHandle(hReadPipe);
 			if (Ret == 0)
 			{
-				cerr << "Decompressor CloseHandle() filed" << endl;
+				json OutputJ;
+				OutputJ["action"] = "transmit";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "Decompressor CloseHandle() failed";
+				OutputJ["file"] = Output;
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
 			}
 		}
 	};
@@ -536,7 +826,15 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 		rlen = recv(ServerSocket, reinterpret_cast<char*>(buf_in), CHUNK_SIZE + crypto_secretstream_xchacha20poly1305_ABYTES, MSG_WAITALL);
 		if (rlen == SOCKET_ERROR)
 		{
-			cerr << "recv() failed\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "transmit";
+				OutputJ["status"] = "warning";
+				OutputJ["reason"] = "recv() failed";
+				OutputJ["file"] = Output;
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			// Force close, even for the decompressor.
 			os.close();
 			remove(Output.c_str());
@@ -545,18 +843,34 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 		if (crypto_secretstream_xchacha20poly1305_pull(&st, buf_out, &out_len, &tag,
 			buf_in, rlen, NULL, 0) != 0) {
 			// corrupted chunk
-			cerr << "The file is corrupted\n";
-			// Force close, even for the decompressor.
-			os.close();
-			remove(Output.c_str());
-			break;
+				{
+					json OutputJ;
+					OutputJ["action"] = "transmit";
+					OutputJ["status"] = "warning";
+					OutputJ["reason"] = Output + " is corrupted";
+					OutputJ["file"] = Output;
+					std::lock_guard<std::mutex> lk(io_mutex);
+					cout << OutputJ.dump() << endl;
+				}
+				// Force close, even for the decompressor.
+				os.close();
+				remove(Output.c_str());
+				break;
 		}
 		DWORD NumberOfBytesWritten;
 		{
 			BOOL Ret = WriteFile(hWritePipe, buf_out, static_cast<DWORD>(out_len), &NumberOfBytesWritten, NULL);
 			if (Ret == FALSE)
 			{
-				cerr << "WriteFile() failed\n";
+				{
+					json OutputJ;
+					OutputJ["action"] = "transmit";
+					OutputJ["status"] = "warning";
+					OutputJ["reason"] = "WriteFile() failed";
+					OutputJ["file"] = Output;
+					std::lock_guard<std::mutex> lk(io_mutex);
+					cout << OutputJ.dump() << endl;
+				}
 				// Force close, even for the decompressor.
 				os.close();
 				remove(Output.c_str());
@@ -572,7 +886,12 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 	Ret = CloseHandle(hWritePipe);
 	if (Ret == 0)
 	{
-		cerr << "CloseHandle() filed" << endl;
+		json OutputJ;
+		OutputJ["action"] = "transmit";
+		OutputJ["status"] = "warning";
+		OutputJ["reason"] = "CloseHandle() failed";
+		std::lock_guard<std::mutex> lk(io_mutex);
+		cout << OutputJ.dump() << endl;
 	}
 
 	t.join();
@@ -580,9 +899,23 @@ void handleClient(const SOCKET ServerSocket, const char* ADDR, unsigned char* se
 	Ret = shutdown(ServerSocket, SD_BOTH);
 	if (Ret == SOCKET_ERROR)
 	{
-		cerr << "shutdown() failed\n";
+		json OutputJ;
+		OutputJ["action"] = "transmit";
+		OutputJ["status"] = "warning";
+		OutputJ["reason"] = "shutdown() failed";
+		std::lock_guard<std::mutex> lk(io_mutex);
+		cout << OutputJ.dump() << endl;
 	}
-	cerr << "The file has been successfully received\n";
+
+	{
+		json OutputJ;
+		OutputJ["action"] = "transmit";
+		OutputJ["status"] = "info";
+		OutputJ["reason"] = Output + " has been successfully received";
+		OutputJ["file"] = Output;
+		std::lock_guard<std::mutex> lk(io_mutex);
+		cout << OutputJ.dump() << endl;
+	}
 }
 
 
@@ -600,28 +933,64 @@ void handleServer(const SOCKET ClientSocket)
 	int Ret = send(ClientSocket, reinterpret_cast<char*>(client_pk), crypto_kx_PUBLICKEYBYTES, 0);
 	if (Ret == SOCKET_ERROR)
 	{
-		cerr << "send() failed\n";
+		{
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "error";
+			OutputJ["reason"] = "send() failed";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
+		}
 		return;
 	}
 	// Get Server's public key
 	int ReadLen = recv(ClientSocket, reinterpret_cast<char*>(server_pk), crypto_kx_PUBLICKEYBYTES, MSG_WAITALL);
 	if (ReadLen == SOCKET_ERROR)
 	{
-		cerr << "recv() failed\n";
+		{
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "error";
+			OutputJ["reason"] = "recv() failed";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
+		}
 		return;
 	}
 	if (crypto_kx_client_session_keys(client_rx, client_tx,
-		client_pk, client_sk, server_pk) != 0) {
-		cerr << "Suspicious server public key\n";
+		client_pk, client_sk, server_pk) != 0)
+	{
+		{
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "error";
+			OutputJ["reason"] = "Suspicious server public key";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
+		}
 		return;
 	}
-	cerr << "Client Key Exchange done\n";
+	{
+		json OutputJ;
+		OutputJ["action"] = "transmit";
+		OutputJ["status"] = "info";
+		OutputJ["reason"] = "Client Key Exchange done";
+		std::lock_guard<std::mutex> lk(io_mutex);
+		cout << OutputJ.dump() << endl;
+	}
 	//=======================================================
 	// Client only sends, so we only use client_tx here.
 	ifstream is(FileName, ios::binary | ios::in);
 	if (!is.is_open())
 	{
-		cerr << "The input file cannot be opened!\n";
+		{
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "error";
+			OutputJ["reason"] = "The input file cannot be opened!";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
+		}
 		return;
 	}
 	unsigned char  buf_in[CHUNK_SIZE];
@@ -633,7 +1002,14 @@ void handleServer(const SOCKET ClientSocket)
 	Ret = send(ClientSocket, reinterpret_cast<const char*>(header), crypto_secretstream_xchacha20poly1305_HEADERBYTES, 0);
 	if (Ret == SOCKET_ERROR)
 	{
-		cerr << "send() failed\n";
+		{
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "error";
+			OutputJ["reason"] = "send() failed";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
+		}
 		is.close();
 		return;
 	}
@@ -651,7 +1027,14 @@ void handleServer(const SOCKET ClientSocket)
 	Ret = send(ClientSocket, reinterpret_cast<char*>(buf_out), static_cast<int>(out_len), 0);
 	if (Ret == SOCKET_ERROR)
 	{
-		cerr << "send() failed\n";
+		{
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "error";
+			OutputJ["reason"] = "send() failed";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
+		}
 		is.close();
 		return;
 	}
@@ -663,7 +1046,14 @@ void handleServer(const SOCKET ClientSocket)
 	Ret = CreatePipe(&hReadPipe, &hWritePipe, NULL, static_cast<DWORD>(max(ZSTD_CStreamOutSize(), CHUNK_SIZE)));
 	if (Ret == 0)
 	{
-		cerr << "CreatePipe() failed\n";
+		{
+			json OutputJ;
+			OutputJ["action"] = "transmit";
+			OutputJ["status"] = "error";
+			OutputJ["reason"] = "CreatePipe() failed";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
+		}
 		is.close();
 		return;
 	}
@@ -679,7 +1069,14 @@ void handleServer(const SOCKET ClientSocket)
 		ZSTD_CStream* const cstream = ZSTD_createCStream();
 		if (cstream == nullptr)
 		{
-			cerr << "ZSTD_createCStream() failed\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "transmit";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "ZSTD_createCStream() failed";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			is.close();
 			// Inside thread, we use abort().
 			abort();
@@ -687,7 +1084,14 @@ void handleServer(const SOCKET ClientSocket)
 		size_t const initResult = ZSTD_initCStream(cstream, ZSTD_CLEVEL_DEFAULT);
 		if (ZSTD_isError(initResult))
 		{
-			cerr << "ZSTD_initCStream() error : " << ZSTD_getErrorName(initResult) << "\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "transmit";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "ZSTD_initCStream() error : " + string(ZSTD_getErrorName(initResult));
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			// Inside thread, we use abort().
 			abort();
 		}
@@ -709,7 +1113,14 @@ void handleServer(const SOCKET ClientSocket)
 				toRead = ZSTD_compressStream(cstream, &output, &input);
 				if (ZSTD_isError(toRead))
 				{
-					cerr << "ZSTD_compressStream() error : " << ZSTD_getErrorName(initResult) << "\n";
+					{
+						json OutputJ;
+						OutputJ["action"] = "transmit";
+						OutputJ["status"] = "error";
+						OutputJ["reason"] = "ZSTD_compressStream() error : " + string(ZSTD_getErrorName(initResult));
+						std::lock_guard<std::mutex> lk(io_mutex);
+						cout << OutputJ.dump() << endl;
+					}
 					// Inside thread, we use abort().
 					abort();
 				}
@@ -721,7 +1132,14 @@ void handleServer(const SOCKET ClientSocket)
 				BOOL Ret = WriteFile(hWritePipe, buffOut, static_cast<DWORD>(output.pos), &NumberOfBytesWritten, NULL);
 				if (Ret == FALSE)
 				{
-					cerr << "WriteFile1() error: " << GetLastError() << "\n";
+					{
+						json OutputJ;
+						OutputJ["action"] = "transmit";
+						OutputJ["status"] = "error";
+						OutputJ["reason"] = "WriteFile1() error: " + to_string(GetLastError());
+						std::lock_guard<std::mutex> lk(io_mutex);
+						cout << OutputJ.dump() << endl;
+					}
 					// Inside thread, we use abort().
 					abort();
 				}
@@ -731,7 +1149,14 @@ void handleServer(const SOCKET ClientSocket)
 		size_t const remainingToFlush = ZSTD_endStream(cstream, &output);   /* close frame */
 		if (remainingToFlush)
 		{
-			cerr << "not fully flushed" << "\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "transmit";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "Compressor not fully flushed";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			// Inside thread, we use abort().
 			abort();
 		}
@@ -740,7 +1165,14 @@ void handleServer(const SOCKET ClientSocket)
 		BOOL Ret = WriteFile(hWritePipe, buffOut, static_cast<DWORD>(output.pos), &NumberOfBytesWritten, NULL);
 		if (Ret == FALSE)
 		{
-			cerr << "WriteFile2() error: " << GetLastError() << "\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "transmit";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "WriteFile2() error: " + to_string(GetLastError());
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			// Inside thread, we use abort().
 			abort();
 		}
@@ -753,7 +1185,12 @@ void handleServer(const SOCKET ClientSocket)
 			int Ret = CloseHandle(hWritePipe);
 			if (Ret == 0)
 			{
-				cerr << "Compressor CloseHandle() filed" << endl;
+				json OutputJ;
+				OutputJ["action"] = "transmit";
+				OutputJ["status"] = "warning";
+				OutputJ["reason"] = "Compressor CloseHandle() failed";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
 			}
 		}
 	};
@@ -785,7 +1222,14 @@ void handleServer(const SOCKET ClientSocket)
 		Ret = send(ClientSocket, reinterpret_cast<char*>(buf_out), static_cast<int>(out_len), 0);
 		if (Ret == SOCKET_ERROR)
 		{
-			cerr << "send() failed\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "transmit";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "send() failed";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			break;
 		}
 	} while (!eof);
@@ -794,7 +1238,12 @@ void handleServer(const SOCKET ClientSocket)
 	Ret = CloseHandle(hReadPipe);
 	if (Ret == 0)
 	{
-		cerr << "CloseHandle() filed" << endl;
+		json OutputJ;
+		OutputJ["action"] = "transmit";
+		OutputJ["status"] = "warning";
+		OutputJ["reason"] = "CloseHandle() failed";
+		std::lock_guard<std::mutex> lk(io_mutex);
+		cout << OutputJ.dump() << endl;
 	}
 
 	t.join();
@@ -802,7 +1251,12 @@ void handleServer(const SOCKET ClientSocket)
 	Ret = shutdown(ClientSocket, SD_BOTH);
 	if (Ret == SOCKET_ERROR)
 	{
-		cerr << "shutdown() failed\n";
+		json OutputJ;
+		OutputJ["action"] = "transmit";
+		OutputJ["status"] = "warning";
+		OutputJ["reason"] = "shutdown() failed";
+		std::lock_guard<std::mutex> lk(io_mutex);
+		cout << OutputJ.dump() << endl;
 	}
 	is.close();
 }
@@ -810,9 +1264,26 @@ void handleServer(const SOCKET ClientSocket)
 
 int main(int argc, char** argv)
 {
+	// Output alive signal
+	{
+		json OutputJ;
+		OutputJ["action"] = "startup";
+		OutputJ["status"] = "ongoing";
+		OutputJ["reason"] = "User required";
+		std::lock_guard<std::mutex> lk(io_mutex);
+		cout << OutputJ.dump() << endl;
+	}
 	// Init crypto library
-	if (sodium_init() == -1) {
-		std::cerr << "libsodium failed to init, exiting...\n";
+	if (sodium_init() == -1)
+	{
+		{
+			json OutputJ;
+			OutputJ["action"] = "startup";
+			OutputJ["status"] = "error";
+			OutputJ["reason"] = "libsodium failed to init";
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
+		}
 		return 1;
 	}
 	// Create Files
@@ -840,13 +1311,20 @@ int main(int argc, char** argv)
 	}
 	catch (exception&e)
 	{
-		cerr << e.what() << endl;
+		{
+			json OutputJ;
+			OutputJ["action"] = "startup";
+			OutputJ["status"] = "error";
+			OutputJ["reason"] = e.what();
+			std::lock_guard<std::mutex> lk(io_mutex);
+			cout << OutputJ.dump() << endl;
+		}
 		return 1;
 	}
 
 	// help
 	if (vm.count("help")) {
-		cerr << desc << endl;
+		cout << desc << endl;
 		WSACleanup();
 		return 1;
 	}
@@ -855,7 +1333,14 @@ int main(int argc, char** argv)
 	{
 		if (vm.count("server") && vm.count("client"))
 		{
-			cerr << "Cannot work under both server and client mode\n";
+			{
+				json OutputJ;
+				OutputJ["action"] = "startup";
+				OutputJ["status"] = "error";
+				OutputJ["reason"] = "Cannot work under both server and client mode";
+				std::lock_guard<std::mutex> lk(io_mutex);
+				cout << OutputJ.dump() << endl;
+			}
 			WSACleanup();
 			exit(1);
 		}
@@ -863,17 +1348,38 @@ int main(int argc, char** argv)
 		{
 			if (!vm.count("port"))
 			{
-				cerr << "Please specify the TCP port\n";
+				{
+					json OutputJ;
+					OutputJ["action"] = "startup";
+					OutputJ["status"] = "error";
+					OutputJ["reason"] = "Please specify the TCP port";
+					std::lock_guard<std::mutex> lk(io_mutex);
+					cout << OutputJ.dump() << endl;
+				}
 				WSACleanup();
 				return 1;
 			}
 			if (vm.count("ipv4") || vm.count("ipv6"))
 			{
-				cerr << "Address is ignored\n";
+				{
+					json OutputJ;
+					OutputJ["action"] = "startup";
+					OutputJ["status"] = "warning";
+					OutputJ["reason"] = "Address is ignored";
+					std::lock_guard<std::mutex> lk(io_mutex);
+					cout << OutputJ.dump() << endl;
+				}
 			}
 			if (vm.count("file"))
 			{
-				cerr << "File is ignored\n";
+				{
+					json OutputJ;
+					OutputJ["action"] = "startup";
+					OutputJ["status"] = "warning";
+					OutputJ["reason"] = "File is ignored";
+					std::lock_guard<std::mutex> lk(io_mutex);
+					cout << OutputJ.dump() << endl;
+				}
 			}
 			vector<thread>t;
 			t.emplace_back([&]() {
@@ -895,25 +1401,53 @@ int main(int argc, char** argv)
 		{
 			if (!vm.count("port"))
 			{
-				cerr << "Please specify the TCP port\n";
+				{
+					json OutputJ;
+					OutputJ["action"] = "startup";
+					OutputJ["status"] = "error";
+					OutputJ["reason"] = "Please specify the TCP port";
+					std::lock_guard<std::mutex> lk(io_mutex);
+					cout << OutputJ.dump() << endl;
+				}
 				WSACleanup();
 				return 1;
 			}
 			if (!vm.count("ipv4") && !vm.count("ipv6"))
 			{
-				cerr << "Please specify the IP address\n";
+				{
+					json OutputJ;
+					OutputJ["action"] = "startup";
+					OutputJ["status"] = "error";
+					OutputJ["reason"] = "Please specify the IP address";
+					std::lock_guard<std::mutex> lk(io_mutex);
+					cout << OutputJ.dump() << endl;
+				}
 				WSACleanup();
 				return 1;
 			}
 			if (vm.count("ipv4") && vm.count("ipv6"))
 			{
-				cerr << "Please specify only one IP address\n";
+				{
+					json OutputJ;
+					OutputJ["action"] = "startup";
+					OutputJ["status"] = "error";
+					OutputJ["reason"] = "Please specify only one IP address";
+					std::lock_guard<std::mutex> lk(io_mutex);
+					cout << OutputJ.dump() << endl;
+				}
 				WSACleanup();
 				return 1;
 			}
 			if (!vm.count("file"))
 			{
-				cerr << "Please specify the File\n";
+				{
+					json OutputJ;
+					OutputJ["action"] = "startup";
+					OutputJ["status"] = "error";
+					OutputJ["reason"] = "Please specify the File";
+					std::lock_guard<std::mutex> lk(io_mutex);
+					cout << OutputJ.dump() << endl;
+				}
 				WSACleanup();
 				return 1;
 			}
@@ -936,7 +1470,12 @@ int main(int argc, char** argv)
 	}
 	else
 	{
-		cerr << "Please specify the working mode (server/client)\n";
+		json OutputJ;
+		OutputJ["action"] = "startup";
+		OutputJ["status"] = "error";
+		OutputJ["reason"] = "Please specify the working mode (server/client)";
+		std::lock_guard<std::mutex> lk(io_mutex);
+		cout << OutputJ.dump() << endl;
 	}
 	WSACleanup();
 }
